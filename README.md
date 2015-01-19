@@ -1,16 +1,14 @@
 # ip2etcd
-Posts Docker container IPs to etcd.  The current Linux x64 binary is available [here](https://github.com/colebrumley/ip2etcd/blob/master/bin/ip2etcd?raw=true).
+Posts Docker container IPs to etcd.  The current Linux x64 binary is available [here](https://github.com/colebrumley/ip2etcd/blob/master/bin/ip2etcd?raw=true).  It works but I need to clean up the code some.
 
 ```sh
-Usage: ip2etcd [options]
-Version: 0.1
-  -c="": Target container (Shorthand)
-  -container="": Target container
-  -d="unix:///var/run/docker.sock": Docker socket or URL (Shorthand)
-  -docker-endpoint="unix:///var/run/docker.sock": Docker socket or URL
-  -e="http://127.0.0.1:4001": Comma separated list of etcd nodes (Shorthand)
-  -etcd-nodes="http://127.0.0.1:4001": Comma separated list of etcd nodes
-  -k="/net": Etcd base key (Shorthand)
-  -key="/net": Etcd base key
-  -q=false: Don't error when container IP is null
+---------------------
+Usage: ip2etcd [options] containers
+Version: 0.2
+---------------------
+  -a=false: Update [a]ll containers
+  -d="unix:///var/run/docker.sock": [d]ocker endpoint
+  -e="http://127.0.0.1:4001": Comma separated list of [e]tcd endpoints
+  -k="/test": etcd base [k]ey
+---------------------
 ```
