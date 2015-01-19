@@ -1,5 +1,5 @@
 # ip2etcd
-Posts Docker container IPs to etcd.  The current Linux x64 binary is available [here](https://github.com/colebrumley/ip2etcd/blob/master/bin/ip2etcd?raw=true).  It works but I need to clean up the code some.
+Posts Docker container IPs to etcd.  The current Linux x64 binary is available [here](https://github.com/colebrumley/ip2etcd/blob/master/bin/ip2etcd?raw=true).  It works but I need to clean up the code some.  Right now it posts container IPs to `/key/[container name or short ID]/ip`.
 
 ```sh
 ---------------------
