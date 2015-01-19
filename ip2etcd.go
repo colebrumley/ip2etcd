@@ -7,7 +7,9 @@ import (
 	"github.com/fsouza/go-dockerclient"
 	"log"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
 )
 
 var (
@@ -15,104 +17,67 @@ var (
 	DockerConn          *docker.Client
 	cli_docker_endpoint string
 	etcd_nodes          []string
-	cli_container       string
+	cli_containers      []string
 	cli_etcd_nodes      string
-	key                 string
-	quiet               bool
+	basekey             string
+	wg                  sync.WaitGroup
+	cli_all             bool
 )
 
 func init() {
-	const (
-		default_etcd_nodes      = "http://127.0.0.1:4001"
-		node_usage              = "Comma separated list of etcd nodes"
-		default_etcd_key        = "/net"
-		key_usage               = "Etcd base key"
-		default_docker_endpoint = "unix:///var/run/docker.sock"
-		endpoint_usage          = "Docker socket or URL"
-		default_container       = ""
-		container_usage         = "Target container"
-	)
-	flag.StringVar(&cli_container, "container", default_container, container_usage)
-	flag.StringVar(&cli_container, "c", default_container, container_usage+" (Shorthand)")
-	flag.StringVar(&cli_docker_endpoint, "docker-endpoint", default_docker_endpoint, endpoint_usage)
-	flag.StringVar(&cli_docker_endpoint, "d", default_docker_endpoint, endpoint_usage+" (Shorthand)")
-	flag.StringVar(&cli_etcd_nodes, "etcd-nodes", default_etcd_nodes, node_usage)
-	flag.StringVar(&cli_etcd_nodes, "e", default_etcd_nodes, node_usage+" (Shorthand)")
-	flag.StringVar(&key, "key", default_etcd_key, key_usage)
-	flag.StringVar(&key, "k", default_etcd_key, key_usage+" (Shorthand)")
-	flag.BoolVar(&quiet, "q", false, "Don't error when container IP is null")
+	flag.StringVar(&cli_docker_endpoint, "d", "unix:///var/run/docker.sock", "[d]ocker endpoint")
+	flag.StringVar(&cli_etcd_nodes, "e", "http://127.0.0.1:4001", "Comma separated list of [e]tcd endpoints")
+	flag.StringVar(&basekey, "k", "/test", "etcd base [k]ey")
+	flag.BoolVar(&cli_all, "a", false, "Update [a]ll containers")
 
 	flag.Usage = func() {
-		fmt.Printf("\n---------------------\nUsage: ip2etcd [options]\nVersion: 0.1\n---------------------\n")
+		fmt.Printf("\n---------------------\nUsage: ip2etcd [options] containers\nVersion: 0.2\n---------------------\n")
 		flag.PrintDefaults()
 		fmt.Printf("---------------------\n")
 	}
 
 	flag.Parse()
 
+	cli_containers = flag.Args()
+
 	for _, node := range strings.Split(cli_etcd_nodes, ",") {
 		etcd_nodes = append(etcd_nodes, node)
 	}
-
-	EtcdConn = etcd.NewClient(etcd_nodes)
-	DockerConn, _ = docker.NewClient(cli_docker_endpoint)
-	key = key + "/" + cli_container + "/ip"
 }
 
 func main() {
-	if len(cli_container) <= 0 {
-		log.Println("Must supply the container!")
-		os.Exit(1)
-	}
-	container_id := id_or_name(cli_container)
-	if len(container_id) <= 0 {
-		log.Println("No container with name/id ", cli_container)
-		os.Exit(1)
-	}
-	//log.Printf("Found ID %s for container %s\n", container_id, cli_container)
-	ip := get_container_ip(cli_container)
-	if len(ip) <= 0 && !quiet {
-		log.Println("No IP address found!  Nothing to set, erroring out...")
-		os.Exit(1)
-	} else if len(ip) <= 0 && quiet {
-		log.Printf("No IP address found!  I have nothing to do, but you told me to shut up so we're all good here.\n")
+	etcdClient := etcd.NewClient(etcd_nodes)
+	dockerClient, _ := docker.NewClient(cli_docker_endpoint)
+
+	if cli_all {
+		//updateEtcd(dockerClient, etcdClient)
+		containerIds := getContainerIds(dockerClient)
+		containerMap := getContainerMap(dockerClient)
+		for _, container := range containerIds {
+			shortId := trimContainerId(container)
+			name := containerMap[shortId]
+			var key string
+			if len(name) > 0 {
+				key = basekey + name + "/ip"
+			} else {
+				key = basekey + shortId + "/ip"
+			}
+			updateContainer(container, dockerClient, etcdClient, key)
+		}
 		os.Exit(0)
 	}
-	log.Printf("Found IP %s for container %s\n", ip, cli_container)
-	current_value := get_key(key)
-	if current_value == ip {
-		log.Printf("Current value matches proposed update, no change needed!\n")
-		os.Exit(0)
+
+	for _, cli_arg := range cli_containers {
+		key := basekey + "/" + strings.Trim(cli_arg, " ") + "/ip"
+		updateContainer(cli_arg, dockerClient, etcdClient, key)
 	}
-	if current_value != "" {
-		log.Printf("Found current value for %s: %s.  Updating...\n", key, current_value)
-	}
-	err := set_key(key, ip)
-	if err != nil {
-		log.Println("Error setting new value! Error text: ", err.Error())
-		os.Exit(1)
-	}
-	log.Printf("Successfully set %s as new value for %s, exiting...", ip, key)
 }
 
-func get_key(key string) string {
-	resp, err := EtcdConn.Get(key, false, false)
+func idOrName(client *docker.Client, idorname string) string {
+	containers, err := client.ListContainers(docker.ListContainersOptions{All: false})
 	if err != nil {
-		//log.Printf("Etcd client error getting %s!  Error text:%s\n", key, err.Error())
+		log.Println("Error getting container info! ")
 		return ""
-	}
-	return resp.Node.Value
-}
-
-func set_key(key string, value string) error {
-	_, err := EtcdConn.Set(key, value, 0)
-	return err
-}
-
-func id_or_name(idorname string) string {
-	containers, err := DockerConn.ListContainers(docker.ListContainersOptions{All: false})
-	if err != nil {
-		log.Fatal("Error getting container info!: ", err.Error())
 	}
 	for _, container := range containers {
 		for _, name := range container.Names {
@@ -127,10 +92,82 @@ func id_or_name(idorname string) string {
 	return ""
 }
 
-func get_container_ip(id string) string {
-	container, err := DockerConn.InspectContainer(id)
-	if err != nil {
-		log.Printf("Encountered error getting info on container %s!\nError text:\n%s", id, err.Error())
+func updateContainer(nameOrId string, dclient *docker.Client, eclient *etcd.Client, etcdKey string) {
+	containerId := idOrName(dclient, nameOrId)
+	shortname := trimContainerId(nameOrId)
+	if len(containerId) <= 0 {
+		log.Printf("Container %s does not exist!\n", shortname)
+		return
 	}
-	return container.NetworkSettings.IPAddress
+	container, err := dclient.InspectContainer(containerId)
+	var ip string
+	if err != nil {
+		ip = ""
+	} else {
+		ip = container.NetworkSettings.IPAddress
+	}
+	if len(ip) <= 0 {
+		log.Printf("No IP address found for container %s, skipping...\n", shortname)
+		return
+	}
+	log.Printf("Found IP %s for container %s\n", ip, shortname)
+
+	currentValue := getKey(eclient, etcdKey)
+	if currentValue == ip {
+		log.Printf("Current value matches proposed update, no change needed!\n")
+		return
+	}
+	if currentValue != "" {
+		log.Printf("Found current value for %s: %s.  Updating...\n", etcdKey, currentValue)
+	}
+	err = setKey(eclient, etcdKey, ip)
+	if err != nil {
+		log.Println("Error setting new value! Error text: ", err.Error())
+		return
+	}
+	log.Printf("Successfully set %s as new value for %s.", ip, etcdKey)
+}
+
+func getContainerMap(client *docker.Client) map[string]string {
+	var m = make(map[string]string)
+	containers, err := client.ListContainers(docker.ListContainersOptions{All: false})
+	if err != nil {
+		log.Printf("Encountered error getting container info!\n%s", err.Error())
+	}
+	for _, container := range containers {
+		shortId := trimContainerId(container.ID)
+		concatNames := fmt.Sprintf("%s", strings.Join(container.Names, ":"))
+		m[shortId] = concatNames
+	}
+	return m
+}
+
+func trimContainerId(id string) string {
+	re := regexp.MustCompile("^[A-Za-z0-9\\/]{1,12}")
+	return fmt.Sprintf("%s", re.FindString(id))
+}
+
+func getContainerIds(client *docker.Client) []string {
+	var results []string
+	containers, err := client.ListContainers(docker.ListContainersOptions{All: false})
+	if err != nil {
+		log.Printf("Encountered error getting container IDs:\n%s", err.Error())
+	}
+	for _, container := range containers {
+		results = append(results, container.ID)
+	}
+	return results
+}
+
+func getKey(client *etcd.Client, key string) string {
+	resp, err := client.Get(key, false, false)
+	if err != nil {
+		return ""
+	}
+	return resp.Node.Value
+}
+
+func setKey(client *etcd.Client, key string, value string) error {
+	_, err := client.Set(key, value, 0)
+	return err
 }
